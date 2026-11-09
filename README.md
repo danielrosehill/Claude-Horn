@@ -3,6 +3,8 @@
 When an agent needs you and you're not looking, it toots a horn. If you still
 don't answer, it gets a louder horn and tries your other computer.
 
+![Claude-Horn notification](docs/screenshots/notification.png)
+
 A stripped-down successor to [Claude-PA](https://github.com/danielrosehill/Claude-PA):
 no TTS, no Home Assistant cascade, no phone calls. Just horns over MQTT.
 
