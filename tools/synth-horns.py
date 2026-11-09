@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Synthesise the bugle and air-horn samples (no third-party audio, so no licence question).
+"""Synthesise the bugle, air-horn and bugle-call samples (no third-party audio, so no licence question).
 
 Pure stdlib: writes 16-bit mono WAVs, then ffmpeg converts them to MP3.
-Usage: python3 tools/synth-horns.py [out_dir]   (default: sounds/horns)
+Usage: python3 tools/synth-horns.py [sounds_dir]   (default: sounds)
+  -> <sounds_dir>/horns/{bugle,air-horn}.mp3 and <sounds_dir>/bugles/bugle-*.mp3
+
+The bugle calls are traditional military calls (public domain melodies), played on the
+natural bugle's harmonic series: G4 C5 E5 G5. They are recognisable approximations,
+not transcriptions.
 """
 import math
 import random
@@ -48,15 +53,49 @@ def write(path, samples, gain=0.9):
         w.writeframes(b"".join(struct.pack("<h", int(s / peak * gain * 32767)) for s in samples))
 
 
-def bugle():
-    # "Charge!": G4 C5 E5 G5 . E5 G5 — notes of the natural bugle's harmonic series.
-    G4, C5, E5, G5 = 392.0, 523.25, 659.25, 783.99
-    notes = [(G4, 0.16), (C5, 0.16), (E5, 0.16), (G5, 0.32), (None, 0.06), (E5, 0.16), (G5, 0.7)]
+G4, C5, E5, G5 = 392.0, 523.25, 659.25, 783.99
+_ = None  # rest
+
+
+def melody(notes, gap=0.015):
+    """Play (freq, seconds) pairs on the synthetic bugle; freq None is a rest."""
     out = []
     for f, d in notes:
         out += silence(d) if f is None else brass(f, d, harmonics=10, bright=0.92, vibrato=0.003)
-        out += silence(0.015)
+        out += silence(gap)
     return out
+
+
+def bugle():
+    # "Charge!": G4 C5 E5 G5 . E5 G5
+    return melody([(G4, 0.16), (C5, 0.16), (E5, 0.16), (G5, 0.32), (_, 0.06), (E5, 0.16), (G5, 0.7)])
+
+
+def reveille():
+    # Opening of Reveille: running G-C-E-C triplets, ending on a held C.
+    t = 0.11
+    run = [(G4, t), (C5, t), (E5, t), (C5, t)]
+    return melody(run * 3 + [(G4, t), (C5, t), (E5, 0.22), (C5, 0.22), (E5, 0.22), (C5, 0.55)], gap=0.01)
+
+
+def call_to_post():
+    # Call to the Post (the racecourse call): rising fanfare, repeated G5s, tumbling finish.
+    t = 0.13
+    return melody([(G4, t), (C5, t), (E5, t), (G5, 0.3), (_, 0.05), (E5, t), (G5, 0.3), (_, 0.05),
+                   (E5, t), (G5, t), (E5, t), (C5, t), (E5, t), (C5, t), (G4, t), (C5, 0.6)])
+
+
+def mess_call():
+    # Mess call: bouncy dotted figures around C and E.
+    d, s = 0.2, 0.08
+    return melody([(G4, d), (C5, s), (E5, d), (C5, s), (E5, d), (G5, s), (E5, 0.3), (_, 0.06),
+                   (C5, d), (E5, s), (G5, d), (E5, s), (C5, d), (G4, s), (C5, 0.55)])
+
+
+def taps():
+    # First phrase of Taps: slow, mournful.
+    return melody([(G4, 0.45), (G4, 0.15), (C5, 1.0), (_, 0.12),
+                   (G4, 0.45), (C5, 0.15), (E5, 1.2)], gap=0.03)
 
 
 def air_horn():
@@ -73,10 +112,21 @@ def air_horn():
     return out
 
 
+SAMPLES = [
+    ("horns", "bugle", bugle),
+    ("horns", "air-horn", air_horn),
+    ("bugles", "bugle-reveille", reveille),
+    ("bugles", "bugle-call-to-post", call_to_post),
+    ("bugles", "bugle-mess-call", mess_call),
+    ("bugles", "bugle-taps", taps),
+]
+
+
 def main():
-    out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "sounds/horns")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name, fn in (("bugle", bugle), ("air-horn", air_horn)):
+    root = Path(sys.argv[1] if len(sys.argv) > 1 else "sounds")
+    for sub, name, fn in SAMPLES:
+        out_dir = root / sub
+        out_dir.mkdir(parents=True, exist_ok=True)
         wav = out_dir / f"{name}.wav"
         write(wav, fn())
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),

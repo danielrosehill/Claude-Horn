@@ -3,21 +3,26 @@
 and escalates (louder horn, more machines) until a client acknowledges.
 
 HTTP API (JSON in, JSON out):
-  POST /toot     {"horn": "bugle", "target": "desktop", "escalate": true, "message": "..."}
+  POST /toot     {"horn": "bugle", "target": "desktop", "escalate": true, "message": "...",
+                  "say": "..." | true, "voice": "en-GB-RyanNeural"}
                  every field optional. escalate=false -> one toot, no ladder.
+                 horn may be a sound name or a group ("bugles", "herman", "chaos"): a group
+                 picks one clip at random per step. say=true speaks the message; a string
+                 speaks that text. Speech is synthesised on the client (edge-tts).
   POST /ack      {"id": "..."}            stop an escalation from the agent side
   GET  /status   clients (online/enabled) and open escalations
   GET  /horns    horn names the clients ship with
   GET  /health   "ok"
 
 MQTT topics (base topic default "claude-horn"):
-  <base>/<client>/toot   server -> client  {"id", "horn", "message", "step", "ts"}
+  <base>/<client>/toot   server -> client  {"id", "horn", "message", "step", "chaos", "say", "voice", "ts"}
   <base>/<client>/state  client -> all     retained {"online", "enabled", "ts"}; LWT online=false
   <base>/<client>/ack    client -> server  {"id", "ts", "how"}
 """
 import json
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -29,6 +34,21 @@ import paho.mqtt.client as mqtt
 log = logging.getLogger("claude-horn")
 HORNS = ["bugle", "air-horn", "car-horn", "car-horn-long", "ship-horn", "siren"]
 CHAOS = ["pa-bell", "hey", "mayday", "glass-break", "cymbal-crash", "alarm-clock", "shout", "grunt"]
+BUGLES = ["bugle-reveille", "bugle-call-to-post", "bugle-mess-call", "bugle-taps"]
+HERMAN = ["herman-need-you", "herman-approval", "herman-question", "herman-hello",
+          "herman-awkward", "herman-escalating", "herman-attention", "herman-click"]
+# Group names: a horn of "herman" plays one random Herman clip, and so on.
+GROUPS = {"bugles": ["bugle"] + BUGLES, "herman": HERMAN, "chaos": CHAOS}
+SOUNDS = HORNS + CHAOS + BUGLES + HERMAN
+
+
+def pick(horn):
+    """Resolve a group name to one clip; pass a sound name through."""
+    return random.choice(GROUPS[horn]) if horn in GROUPS else horn
+
+
+def catalogue():
+    return {"horns": HORNS, "bugles": BUGLES, "herman": HERMAN, "chaos": CHAOS, "groups": list(GROUPS)}
 
 DEFAULT_CONFIG = {
     "mqtt": {"host": "localhost", "port": 1883, "username": None, "base_topic": "claude-horn"},
@@ -114,29 +134,32 @@ class Horn:
     def publish(self, client, payload):
         self.mq.publish(f"{self.base}/{client}/toot", json.dumps(payload), qos=1)
 
-    def toot(self, horn=None, target=None, escalate=True, message=None):
+    def toot(self, horn=None, target=None, escalate=True, message=None, say=None, voice=None):
         tid = uuid.uuid4().hex[:10]
         target = target or self.cfg["clients"][0]
+        speech = {"say": (message if say is True else say) or None, "voice": voice}
         if not escalate:
             sent = self.resolve([target] if target != "all" else "all", target)
+            played = pick(horn or "bugle")
             for c in sent:
-                self.publish(c, {"id": tid, "horn": horn or "bugle", "message": message, "step": 0, "ts": time.time()})
-            return {"id": tid, "sent_to": sent, "escalating": False}
+                self.publish(c, {"id": tid, "horn": played, "message": message, "step": 0, **speech, "ts": time.time()})
+            return {"id": tid, "sent_to": sent, "horn": played, "escalating": False}
         ev = threading.Event()
         with self.lock:
             self.open[tid] = {"event": ev, "target": target, "step": 0, "started": time.time(), "acked_by": None}
-        threading.Thread(target=self._ladder, args=(tid, ev, horn, target, message), daemon=True).start()
+        threading.Thread(target=self._ladder, args=(tid, ev, horn, target, message, speech), daemon=True).start()
         return {"id": tid, "escalating": True, "target": target}
 
-    def _ladder(self, tid, ev, first_horn, target, message):
+    def _ladder(self, tid, ev, first_horn, target, message, speech):
         ladder = self.cfg["ladder"]
         for i, step in enumerate(ladder):
-            horn = first_horn if (i == 0 and first_horn) else step["horn"]
+            horn = pick(first_horn if (i == 0 and first_horn) else step["horn"])
             sent = self.resolve(step["targets"], target)
             with self.lock:
                 if tid in self.open:
                     self.open[tid]["step"] = i
-            payload = {"id": tid, "horn": horn, "message": message, "step": i, "chaos": bool(step.get("chaos")), "ts": time.time()}
+            payload = {"id": tid, "horn": horn, "message": message, "step": i, "chaos": bool(step.get("chaos")),
+                       **speech, "ts": time.time()}
             for c in sent:
                 self.publish(c, payload)
             log.info("toot %s step %d horn=%s -> %s", tid, i, horn, sent or "nobody online")
@@ -184,7 +207,7 @@ def make_handler(horn):
             if self.path == "/status":
                 return self._send(200, horn.status())
             if self.path == "/horns":
-                return self._send(200, {"horns": HORNS, "chaos": CHAOS})
+                return self._send(200, catalogue())
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -194,9 +217,13 @@ def make_handler(horn):
                 return self._send(400, {"error": "bad json"})
             if self.path == "/toot":
                 h = body.get("horn")
-                if h and h not in HORNS + CHAOS:
-                    return self._send(400, {"error": f"unknown horn {h}", "horns": HORNS, "chaos": CHAOS})
-                return self._send(200, horn.toot(h, body.get("target"), body.get("escalate", True), body.get("message")))
+                if h and h not in SOUNDS and h not in GROUPS:
+                    return self._send(400, {"error": f"unknown horn {h}", **catalogue()})
+                say = body.get("say")
+                if say is not None and not isinstance(say, (bool, str)):
+                    return self._send(400, {"error": "say must be true or a string"})
+                return self._send(200, horn.toot(h, body.get("target"), body.get("escalate", True), body.get("message"),
+                                                 say, body.get("voice")))
             if self.path == "/ack":
                 return self._send(200, {"acked": horn.ack(body.get("id"))})
             self._send(404, {"error": "not found"})

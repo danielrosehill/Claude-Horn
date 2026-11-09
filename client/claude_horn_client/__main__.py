@@ -2,8 +2,16 @@
 
 Config: ~/.config/claude-horn/client.json
   {"name": "desktop", "mqtt": {"host": "...", "port": 1883, "username": "...", "password": "..."},
-   "base_topic": "claude-horn", "enabled": true, "sounds_dir": "~/.local/share/claude-horn/sounds"}
+   "base_topic": "claude-horn", "enabled": true, "sounds_dir": "~/.local/share/claude-horn/sounds",
+   "tts": {"enabled": true, "voice": "en-GB-RyanNeural"}}
+
+Speech: a toot carrying "say" is spoken after the horn. The text is synthesised here, on the
+client, with edge-tts (Microsoft's online neural voices; needs internet, no key, light on CPU).
+Clips are cached in ~/.cache/claude-horn/tts/ by text+voice, so ladder repeats don't re-fetch.
+If synthesis fails, the horn still plays.
 """
+import asyncio
+import hashlib
 import json
 import os
 import random
@@ -12,6 +20,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,7 +36,10 @@ DEFAULTS = {
     "base_topic": "claude-horn",
     "enabled": True,
     "sounds_dir": "~/.local/share/claude-horn/sounds",
+    "tts": {"enabled": True, "voice": "en-GB-RyanNeural"},
 }
+SOUND_DIRS = ("horns", "bugles", "herman", "chaos")
+TTS_CACHE = Path("~/.cache/claude-horn/tts").expanduser()
 
 
 def load_config():
@@ -47,7 +59,7 @@ def save_enabled(enabled):
 
 
 def find_sound(sounds_dir, name):
-    for sub in ("horns", "chaos"):
+    for sub in SOUND_DIRS:
         p = sounds_dir / sub / f"{name}.mp3"
         if p.exists():
             return p
@@ -67,6 +79,30 @@ def play(paths):
         cmds = [[player, str(p)] for p in paths]
     script = " && ".join(" ".join(f"'{a}'" for a in c) for c in cmds)
     subprocess.Popen(["sh", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def synthesise(text, voice):
+    """Speak text to an MP3 with edge-tts; return the path, or None if it failed."""
+    out = TTS_CACHE / f"{hashlib.sha1(f'{voice}|{text}'.encode()).hexdigest()[:16]}.mp3"
+    if out.exists() and out.stat().st_size:
+        return out
+    try:
+        import edge_tts
+        TTS_CACHE.mkdir(parents=True, exist_ok=True)
+        asyncio.run(asyncio.wait_for(edge_tts.Communicate(text, voice).save(str(out)), timeout=20))
+        return out if out.exists() and out.stat().st_size else None
+    except Exception as e:  # network down, bad voice name, edge-tts missing
+        print(f"claude-horn: tts failed: {e}", file=sys.stderr)
+        out.unlink(missing_ok=True)
+        return None
+
+
+def play_with_speech(clips, text, voice):
+    """Synthesise (off the UI thread), then play the clips followed by the speech."""
+    def run():
+        speech = synthesise(text, voice) if text else None
+        play(clips + ([speech] if speech else []))
+    threading.Thread(target=run, daemon=True).start()
 
 
 def icon(color):
@@ -110,8 +146,10 @@ class HornClient:
         self.ack_action = QAction("I'm here (acknowledge)", enabled=False)
         self.ack_action.triggered.connect(lambda: self.ack("menu"))
         test = QAction("Test horn", triggered=lambda: play([find_sound(self.sounds, "bugle")]))
+        test_say = QAction("Test speech", triggered=lambda: play_with_speech(
+            [], f"Claude-Horn on {self.name} can talk.", self.tts_voice()))
         quit_ = QAction("Quit", triggered=self.quit)
-        for a in (self.toggle, self.ack_action, test):
+        for a in (self.toggle, self.ack_action, test, test_say):
             menu.addAction(a)
         menu.addSeparator()
         menu.addAction(quit_)
@@ -139,6 +177,9 @@ class HornClient:
         self.mq.connect_async(m["host"], int(m["port"]))
         self.mq.loop_start()
         self.refresh_icon()
+
+    def tts_voice(self, requested=None):
+        return requested or self.cfg["tts"].get("voice") or "en-GB-RyanNeural"
 
     def topic(self, kind):
         return f"{self.base}/{self.name}/{kind}"
@@ -178,7 +219,12 @@ class HornClient:
         if data.get("chaos"):
             chaos = sorted((self.sounds / "chaos").glob("*.mp3"))
             clips = random.sample(chaos, min(2, len(chaos))) + clips
-        play([c for c in clips if c])
+        clips = [c for c in clips if c]
+        say = data.get("say") if self.cfg["tts"].get("enabled", True) else None
+        if say:
+            play_with_speech(clips, say, self.tts_voice(data.get("voice")))
+        else:
+            play(clips)
         self.pending = data.get("id")
         self.ack_action.setEnabled(True)
         msg = data.get("message") or "Claude needs you."
