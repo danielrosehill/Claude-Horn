@@ -1,0 +1,7 @@
+{
+  "name": "desktop",
+  "mqtt": { "host": "mqtt.example.lan", "port": 1883, "username": "claude-horn", "password": "change-me" },
+  "base_topic": "claude-horn",
+  "enabled": true,
+  "sounds_dir": "~/.local/share/claude-horn/sounds"
+}

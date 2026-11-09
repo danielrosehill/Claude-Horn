@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Agent-side CLI. Toot the horn on the Claude-Horn server.
+#   horn                          escalating toot at the default client (bugle first)
+#   horn -t laptop -m "Approve?"  start on the laptop, with a message in the notification
+#   horn -H air-horn --once       one air horn, no escalation
+#   horn --ack <id> | --status | --horns
+# Server URL: $CLAUDE_HORN_URL (default http://localhost:8787)
+set -euo pipefail
+URL="${CLAUDE_HORN_URL:-http://localhost:8787}"
+HORN=""; TARGET=""; MSG=""; ESC=true
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -H|--horn)   HORN="$2"; shift 2 ;;
+    -t|--target) TARGET="$2"; shift 2 ;;
+    -m|--message) MSG="$2"; shift 2 ;;
+    --once)      ESC=false; shift ;;
+    --ack)       curl -fsS -X POST "$URL/ack" -d "{\"id\":\"$2\"}"; echo; exit ;;
+    --status)    curl -fsS "$URL/status"; echo; exit ;;
+    --horns)     curl -fsS "$URL/horns"; echo; exit ;;
+    -h|--help)   sed -n 2,8p "$0"; exit ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+BODY=$(python3 -c 'import json,sys; h,t,m,e=sys.argv[1:]; print(json.dumps({k:v for k,v in {"horn":h or None,"target":t or None,"message":m or None,"escalate":e=="true"}.items() if v is not None}))' "$HORN" "$TARGET" "$MSG" "$ESC")
+curl -fsS -X POST "$URL/toot" -H 'Content-Type: application/json' -d "$BODY"; echo

@@ -1,0 +1,11 @@
+{
+  "mqtt": { "host": "mqtt.example.lan", "port": 1883, "username": "claude-horn", "base_topic": "claude-horn" },
+  "http": { "bind": "0.0.0.0", "port": 8787 },
+  "clients": ["desktop", "laptop"],
+  "ladder": [
+    { "horn": "bugle",     "targets": "primary", "wait": 60 },
+    { "horn": "air-horn",  "targets": "others",  "wait": 60 },
+    { "horn": "air-horn",  "targets": "all",     "wait": 90 },
+    { "horn": "ship-horn", "targets": "all",     "chaos": true }
+  ]
+}

@@ -1,0 +1,10 @@
+services:
+  claude-horn:
+    build: .
+    container_name: claude-horn
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./config.json:/config/config.json:ro
+    env_file: .env   # MQTT_PASSWORD=...

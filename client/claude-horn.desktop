@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Claude-Horn
+Comment=Plays a horn when an agent needs your attention
+Exec=@BIN@
+Icon=audio-volume-high
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
