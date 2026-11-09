@@ -109,7 +109,9 @@ A line for an agent's instructions file:
 ## Status (2026-11-09)
 
 - **Tested:** end-to-end on a local broker with two headless clients: ladder timing and targets, agent-side ack, chaos pre-roll, disabled-state handling.
-- **Not yet tested:** the tray UI on a live desktop (click-to-ack, notification click, autostart), and the Docker build.
+- **Verified live (2026-11-09):** Docker build and server against a real Mosquitto with a password login; tray clients on two KDE Plasma 6 / Wayland machines report online, and a toot plays on the target.
+- **Not yet verified:** click-to-ack from the tray or notification, and autostart after a fresh login.
+- A git-URL build context (`build: https://…#main:server`) needs BuildKit. On a host without a buildkitd socket, clone the repo and build `./server` instead.
 - **Known gap:** there is no automatic "the user came back" detection. KDE Wayland doesn't expose `GetSessionIdleTime` (`org.freedesktop.ScreenSaver` returns `NotSupported`), so the ack is a click on the tray or the notification.
 
 ## Licence
